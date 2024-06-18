@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "LedCubeModes.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -25,6 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 /* USER CODE END Includes */
 
@@ -35,7 +37,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define MAX_COMMAND_QUEUE 10
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -66,709 +68,109 @@ static void MX_USART1_UART_Init(void);
 
 char *demo_string = "Hello \r\n"; //demo string
 uint8_t recv_char;
-uint8_t recv_str[20];
+uint8_t recv_str[40];
+uint8_t command[40];
 int i=0;
 char *on = "on";
 char *off = "off";
 uint8_t ft = 76;
+volatile bool interruptOccurred = false;
+
+
+#define COMMAND_FLICKER_ON "command_flicker_on"
+#define COMMAND_LAYER_UP_DOWN "command_layer_up_down"
+#define COMMAND_COLUMNS_SIDEWAYS "command_columns_sideways"
+#define COMMAND_STOMP_UP_DOWN "command_stomp_up_down"
+#define COMMAND_FLICKER_OFF "command_flicker_off"
+#define COMMAND_AROUND_EDGE "command_around_edge"
+#define COMMAND_RECTANGLE "command_rectangle"
+#define COMMAND_PROPELLER "command_propeller"
+#define COMMAND_SPIRAL "command_spiral"
+#define COMMAND_ALL_LEDS "command_all_leds"
 
 typedef struct {
-    const char* name;
-    GPIO_TypeDef* port;
-    uint16_t pin;
-} PinMap;
-PinMap pinMap[] = {
-    {"PIN11", PIN11_GPIO_Port, PIN11_Pin},
-    {"PIN12", PIN12_GPIO_Port, PIN12_Pin},
-    {"PIN13", PIN13_GPIO_Port, PIN13_Pin},
-    {"PIN14", PIN14_GPIO_Port, PIN14_Pin},
-    {"PIN21", PIN21_GPIO_Port, PIN21_Pin},
-    {"PIN22", PIN22_GPIO_Port, PIN22_Pin},
-    {"PIN23", PIN23_GPIO_Port, PIN23_Pin},
-    {"PIN24", PIN24_GPIO_Port, PIN24_Pin},
-    {"PIN31", PIN31_GPIO_Port, PIN31_Pin},
-    {"PIN32", PIN32_GPIO_Port, PIN32_Pin},
-    {"PIN33", PIN33_GPIO_Port, PIN33_Pin},
-    {"PIN34", PIN34_GPIO_Port, PIN34_Pin},
-    {"PIN41", PIN41_GPIO_Port, PIN41_Pin},
-    {"PIN42", PIN42_GPIO_Port, PIN42_Pin},
-    {"PIN43", PIN43_GPIO_Port, PIN43_Pin},
-    {"PIN44", PIN44_GPIO_Port, PIN44_Pin},
-};
-PinMap layers[] ={
-		{"LAYER1", LAYER1_GPIO_Port, LAYER1_Pin},
-		{"LAYER2", LAYER2_GPIO_Port, LAYER2_Pin},
-		{"LAYER3", LAYER3_GPIO_Port, LAYER3_Pin},
-		{"LAYER4", LAYER4_GPIO_Port, LAYER4_Pin}};
-int mapSize = sizeof(pinMap) / sizeof(PinMap);
-int layersSize = sizeof(layers) / sizeof(PinMap);
+    char command[40];
+    bool active;
+} CommandQueueItem;
 
+CommandQueueItem commandQueue[MAX_COMMAND_QUEUE];
+int commandQueueSize = 0;
 
-PinMap* findPinMap(const char* name) {
-    for (int i = 0; i < sizeof(pinMap) / sizeof(PinMap); i++) {
-        if (strcmp(name, pinMap[i].name) == 0) {
-            return &pinMap[i];
+void processBluetoothCommands(char* recv_str) {
+    char commandOn[40];
+    char commandOff[40];
+
+    strcpy(commandOn, recv_str);
+    strcpy(commandOff, recv_str);
+    strcat(commandOn, "_on");
+    strcat(commandOff, "_off");
+
+    // Check if the received command is to turn on
+    if (strstr(recv_str, "_on")) {
+        // Remove "_on" from the command
+        recv_str[strlen(recv_str) - 3] = '\0';
+
+        // Check if the command is already in the queue
+        for (int j = 0; j < commandQueueSize; ++j) {
+            if (!strcmp(commandQueue[j].command, recv_str)) {
+                // Command already in queue, no need to add it again
+                return;
+            }
+        }
+
+        // Add the command to the queue
+        if (commandQueueSize < MAX_COMMAND_QUEUE) {
+            strcpy(commandQueue[commandQueueSize].command, recv_str);
+            commandQueue[commandQueueSize].active = true;
+            commandQueueSize++;
+        }
+    } else if (strstr(recv_str, "_off")) {
+        // Remove "_off" from the command
+        recv_str[strlen(recv_str) - 4] = '\0';
+
+        // Deactivate the command in the queue
+        for (int j = 0; j < commandQueueSize; ++j) {
+            if (!strcmp(commandQueue[j].command, recv_str)) {
+                // Remove the command from the queue
+                for (int k = j; k < commandQueueSize - 1; ++k) {
+                    commandQueue[k] = commandQueue[k + 1];
+                }
+                commandQueueSize--;
+                return;
+            }
         }
     }
-    return NULL;
 }
 
 
-void disableAllPins() {
-    for (int i = 0; i < mapSize; i++) {
-        HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    }
 
-    for(int i = 0; i < layersSize; i++) {
-    	HAL_GPIO_WritePin(layers[i].port, layers[i].pin, GPIO_PIN_RESET);
-    }
-}
 
-void enableAllPins() {
-    for (int i = 0; i < mapSize; i++) {
-        HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
+void executeCommandQueue() {
+    for (int j = 0; j < commandQueueSize; ++j) {
+        if (commandQueue[j].active) {
+            if (!strcmp(commandQueue[j].command, COMMAND_FLICKER_ON)) {
+                flickerOn();
+            } else if (!strcmp(commandQueue[j].command, COMMAND_LAYER_UP_DOWN)) {
+                turnOnAndOffAllByLayerUpAndDownNotTimed();
+            } else if (!strcmp(commandQueue[j].command, COMMAND_COLUMNS_SIDEWAYS)) {
+                turnOnAndOffAllByColumnSideways();
+            } else if (!strcmp(commandQueue[j].command, COMMAND_STOMP_UP_DOWN)) {
+                layerstompUpAndDown();
+            } else if (!strcmp(commandQueue[j].command, COMMAND_FLICKER_OFF)) {
+                flickerOff();
+            } else if (!strcmp(commandQueue[j].command, COMMAND_AROUND_EDGE)) {
+                aroundEdgeDown();
+            } else if (!strcmp(commandQueue[j].command, COMMAND_RECTANGLE)) {
+                diagonalRectangle();
+            } else if (!strcmp(commandQueue[j].command, COMMAND_PROPELLER)) {
+                propeller();
+            } else if (!strcmp(commandQueue[j].command, COMMAND_SPIRAL)) {
+                spiralInAndOut();
+            } else if (!strcmp(commandQueue[j].command, COMMAND_ALL_LEDS)) {
+                goThroughAllLedsOneAtATime();
+            }
+        }
     }
-
-    for(int i = 0; i < layersSize; i++) {
-    	HAL_GPIO_WritePin(layers[i].port, layers[i].pin, GPIO_PIN_SET);
-    }
-}
-//turn columns off
-void turnColumnsOff() {
-
-	for (int i = 0; i < mapSize; i++) {
-	        HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-	    }
-
-}
-//flicker on
-void flickerOn()
-{
-  int i = 150;
-  while(i != 0)
-  {
-    enableAllPins();
-    HAL_Delay(i);
-    disableAllPins();
-    HAL_Delay(i);
-    i-= 5;
-  }
-}
-
-void turnOnAndOffAllByLayerUpAndDownNotTimed()
-{
-  int x = 75;
-  for(int i = 5; i != 0; i--)
-  {
-    enableAllPins();
-    for(int i = layersSize; i!=0; i--)
-    {
-    	HAL_GPIO_WritePin(layers[i-1].port, layers[i-1].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-    }
-    for(int i = 0; i< layersSize; i++)
-    {
-    	HAL_GPIO_WritePin(layers[i].port, layers[i].pin, GPIO_PIN_SET);
-    	    	HAL_Delay(x);
-    }
-      for(int i = 0; i<layersSize; i++)
-    {
-    	  HAL_GPIO_WritePin(layers[i].port, layers[i].pin, GPIO_PIN_RESET);
-    	      	    	HAL_Delay(x);
-    }
-    for(int i = layersSize; i!=0; i--)
-    {
-    	HAL_GPIO_WritePin(layers[i-1].port, layers[i-1].pin, GPIO_PIN_SET);
-    	    	HAL_Delay(x);
-    }
-  }
-}
-
-//turn everything on and off by column sideways
-void turnOnAndOffAllByColumnSideways()
-{
-  int x = 75;
-  disableAllPins();
-  //turn on layers
-  for(int i = 0; i<layersSize; i++)
-  {
-	  HAL_GPIO_WritePin(layers[i].port, layers[i].pin, GPIO_PIN_SET);
-  }
-  for(int y = 0; y<3; y++)
-  {
-    //turn on 0-3
-    for(int i = 0; i<4; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-    }
-    //turn on 4-7
-    for(int i = 4; i<8; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-    }
-    //turn on 8-11
-    for(int i = 8; i<12; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-    }
-    //turn on 12-15
-    for(int i = 12; i<16; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-    }
-    //turn off 0-3
-    for(int i = 0; i<4; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	HAL_Delay(x);
-    }
-    //turn off 4-7
-    for(int i = 4; i<8; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	HAL_Delay(x);
-    }
-    //turn off 8-11
-    for(int i = 8; i<12; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	HAL_Delay(x);
-    }
-    //turn off 12-15
-    for(int i = 12; i<16; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	HAL_Delay(x);
-    }
-    //turn on 12-15
-    for(int i = 12; i<16; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-    }
-    //turn on 8-11
-    for(int i = 8; i<12; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	    	HAL_Delay(x);
-    }
-    //turn on 4-7
-    for(int i = 4; i<8; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	    	HAL_Delay(x);
-    }
-    //turn on 0-3
-    for(int i = 0; i<4; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	    	HAL_Delay(x);
-    }
-    //turn off 12-15
-    for(int i = 12; i<16; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	    	HAL_Delay(x);
-    }
-    //turn off 8-11
-    for(int i = 8; i<12; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	    	    	HAL_Delay(x);
-    }
-    //turn off 4-7
-    for(int i = 4; i<8; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	    	    	HAL_Delay(x);
-    }
-    //turn off 0-3
-    for(int i = 0; i<4; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	    	    	HAL_Delay(x);
-    }
-  }
-}
-
-//up and down single layer stomp
-void layerstompUpAndDown()
-{
-  int x = 75;
-  for(int i = 0; i<4; i++)
-  {
-	  HAL_GPIO_WritePin(layers[i].port, layers[i].pin, GPIO_PIN_RESET);
-  }
-  for(int y = 0; y<5; y++)
-  {
-    for(int count = 0; count<1; count++)
-    {
-      for(int i = 0; i<4; i++)
-      {
-    	  HAL_GPIO_WritePin(layers[i].port, layers[i].pin, GPIO_PIN_SET);
-    	  HAL_Delay(x);
-          HAL_GPIO_WritePin(layers[i].port, layers[i].pin, GPIO_PIN_RESET);
-      }
-      for(int i = 4; i !=0; i--)
-      {
-    	  HAL_GPIO_WritePin(layers[i-1].port, layers[i-1].pin, GPIO_PIN_SET);
-    	  HAL_Delay(x);
-    	  HAL_GPIO_WritePin(layers[i-1].port, layers[i-1].pin, GPIO_PIN_RESET);
-      }
-    }
-    for(int i = 0; i<4; i++)
-    {
-    	HAL_GPIO_WritePin(layers[i].port, layers[i].pin, GPIO_PIN_SET);
-    	HAL_Delay(x);
-    }
-    for(int i = 4; i!=0; i--)
-    {
-    	HAL_GPIO_WritePin(layers[i-1].port, layers[i-1].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-    }
-  }
-}
-
-//flicker off
-void flickerOff()
-{
-  enableAllPins();
-  for(int i = 0; i!= 150; i+=5)
-  {
-    disableAllPins();
-    HAL_Delay(i+50);
-    enableAllPins();
-    HAL_Delay(i);
-  }
-}
-//around edge of the cube down
-void aroundEdgeDown()
-{
-  for(int x = 200; x != 0; x -=50)
-  {
-    disableAllPins();
-    for(int i = 4; i != 0; i--)
-    {
-    	HAL_GPIO_WritePin(layers[i-1].port, layers[i-1].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[5].port, pinMap[5].pin, GPIO_PIN_RESET);
-    	HAL_GPIO_WritePin(pinMap[6].port, pinMap[6].pin, GPIO_PIN_RESET);
-    	HAL_GPIO_WritePin(pinMap[9].port, pinMap[9].pin, GPIO_PIN_RESET);
-    	HAL_GPIO_WritePin(pinMap[10].port, pinMap[10].pin, GPIO_PIN_RESET);
-
-    	HAL_GPIO_WritePin(pinMap[0].port, pinMap[0].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[0].port, pinMap[0].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[4].port, pinMap[4].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[4].port, pinMap[4].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[8].port, pinMap[8].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[8].port, pinMap[8].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[12].port, pinMap[12].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[12].port, pinMap[12].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[13].port, pinMap[13].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[13].port, pinMap[13].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[14].port, pinMap[14].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[14].port, pinMap[14].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[15].port, pinMap[15].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[15].port, pinMap[15].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[11].port, pinMap[11].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[11].port, pinMap[11].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[7].port, pinMap[7].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[7].port, pinMap[7].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[3].port, pinMap[3].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[3].port, pinMap[3].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[2].port, pinMap[2].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[2].port, pinMap[2].pin, GPIO_PIN_SET);
-    	HAL_GPIO_WritePin(pinMap[1].port, pinMap[1].pin, GPIO_PIN_RESET);
-    	HAL_Delay(x);
-
-    	HAL_GPIO_WritePin(pinMap[1].port, pinMap[1].pin, GPIO_PIN_SET);
-    }
-  }
-}
-
-//diagonal rectangle
-void diagonalRectangle()
-{
-  int x = 350;
-  disableAllPins();
-  for(int count = 0; count<5; count++)
-  {
-    //top left
-    for(int i = 0; i<8; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-
-    }
-    HAL_GPIO_WritePin(layers[3].port, layers[3].pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(layers[2].port, layers[2].pin, GPIO_PIN_SET);
-    HAL_Delay(x);
-
-    disableAllPins();
-    //middle middle
-    for(int i = 4; i<12; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    }
-    HAL_GPIO_WritePin(layers[1].port, layers[1].pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(layers[2].port, layers[2].pin, GPIO_PIN_SET);
-
-    HAL_Delay(x);
-
-    disableAllPins();
-    //bottom right
-    for(int i = 8; i<16; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    }
-    HAL_GPIO_WritePin(layers[0].port, layers[0].pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(layers[1].port, layers[1].pin, GPIO_PIN_SET);
-    HAL_Delay(x);
-
-    disableAllPins();
-    //bottom middle
-    for(int i = 4; i<12; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    }
-    HAL_GPIO_WritePin(layers[0].port, layers[0].pin, GPIO_PIN_SET);
-       HAL_GPIO_WritePin(layers[1].port, layers[1].pin, GPIO_PIN_SET);
-       HAL_Delay(x);
-       disableAllPins();
-    //bottom left
-    for(int i = 0; i<8; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    }
-    HAL_GPIO_WritePin(layers[0].port, layers[0].pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(layers[1].port, layers[1].pin, GPIO_PIN_SET);
-    HAL_Delay(x);
-    disableAllPins();
-    //middle middle
-    for(int i = 4; i<12; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    }
-    HAL_GPIO_WritePin(layers[1].port, layers[1].pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(layers[2].port, layers[2].pin, GPIO_PIN_SET);
-    HAL_Delay(x);
-    disableAllPins();
-    //top right
-    for(int i = 8; i<16; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    }
-    HAL_GPIO_WritePin(layers[2].port, layers[2].pin, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(layers[3].port, layers[3].pin, GPIO_PIN_SET);
-        HAL_Delay(x);
-        disableAllPins();
-    //top middle
-    for(int i = 4; i<12; i++)
-    {
-    	HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    }
-    HAL_GPIO_WritePin(layers[2].port, layers[2].pin, GPIO_PIN_SET);
-           HAL_GPIO_WritePin(layers[3].port, layers[3].pin, GPIO_PIN_SET);
-           HAL_Delay(x);
-           disableAllPins();
-  }
-  //top left
-  for(int i = 0; i<8; i++)
-  {
-	  HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-  }
-  HAL_GPIO_WritePin(layers[3].port, layers[3].pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(layers[2].port, layers[2].pin, GPIO_PIN_SET);
-  HAL_Delay(x);
-  disableAllPins();
-}
-
-//propeller
-void propeller()
-{
-  disableAllPins();
-  int x = 90;
-  for(int y = 4; y>0; y--)
-  {
-    for(int i = 0; i<6; i++)
-    {
-      //turn on layer
-    	HAL_GPIO_WritePin(layers[y-1].port, layers[y-1].pin, GPIO_PIN_SET);
-      //a1
-      turnColumnsOff();
-      HAL_GPIO_WritePin(pinMap[0].port, pinMap[0].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[5].port, pinMap[5].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[10].port, pinMap[10].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[15].port, pinMap[15].pin, GPIO_PIN_RESET);
-      HAL_Delay(x);
-      //b1
-      turnColumnsOff();
-      HAL_GPIO_WritePin(pinMap[4].port, pinMap[4].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[5].port, pinMap[5].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[10].port, pinMap[10].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[11].port, pinMap[11].pin, GPIO_PIN_RESET);
-      HAL_Delay(x);
-      //c1
-      turnColumnsOff();
-      HAL_GPIO_WritePin(pinMap[6].port, pinMap[6].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[7].port, pinMap[7].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[8].port, pinMap[8].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[9].port, pinMap[9].pin, GPIO_PIN_RESET);
-      HAL_Delay(x);
-      //d1
-      turnColumnsOff();
-      HAL_GPIO_WritePin(pinMap[3].port, pinMap[3].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[6].port, pinMap[6].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[9].port, pinMap[9].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[12].port, pinMap[12].pin, GPIO_PIN_RESET);
-      HAL_Delay(x);
-      //d2
-      turnColumnsOff();
-      HAL_GPIO_WritePin(pinMap[2].port, pinMap[2].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[6].port, pinMap[6].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[9].port, pinMap[9].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[13].port, pinMap[13].pin, GPIO_PIN_RESET);
-      HAL_Delay(x);
-      //d3
-      turnColumnsOff();
-      HAL_GPIO_WritePin(pinMap[1].port, pinMap[1].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[5].port, pinMap[5].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[10].port, pinMap[10].pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(pinMap[14].port, pinMap[14].pin, GPIO_PIN_RESET);
-      HAL_Delay(x);
-    }
-  }
-  //d4
-  turnColumnsOff();
-  HAL_GPIO_WritePin(pinMap[0].port, pinMap[0].pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(pinMap[5].port, pinMap[5].pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(pinMap[10].port, pinMap[10].pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(pinMap[15].port, pinMap[15].pin, GPIO_PIN_RESET);
-  HAL_Delay(x);
-}
-
-//spiral in and out
-void spiralInAndOut()
-{
-  enableAllPins();
-  int x = 60;
-  for(int i = 0; i<6; i++)
-  {
-    //spiral in clockwise
-	  HAL_GPIO_WritePin(pinMap[0].port, pinMap[0].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[1].port, pinMap[1].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[2].port, pinMap[2].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[3].port, pinMap[3].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[7].port, pinMap[7].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[11].port, pinMap[11].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[15].port, pinMap[15].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[14].port, pinMap[14].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[13].port, pinMap[13].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[12].port, pinMap[12].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[8].port, pinMap[8].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[4].port, pinMap[4].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[5].port, pinMap[5].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[6].port, pinMap[6].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[10].port, pinMap[10].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  HAL_GPIO_WritePin(pinMap[9].port, pinMap[9].pin, GPIO_PIN_SET);
-	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[9].port, pinMap[9].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[10].port, pinMap[10].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[6].port, pinMap[6].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[5].port, pinMap[5].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[4].port, pinMap[4].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[8].port, pinMap[8].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[12].port, pinMap[12].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[13].port, pinMap[13].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[14].port, pinMap[14].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	      HAL_GPIO_WritePin(pinMap[15].port, pinMap[15].pin, GPIO_PIN_RESET);
-	      HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[11].port, pinMap[11].pin, GPIO_PIN_RESET);
-	      HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[7].port, pinMap[7].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[3].port, pinMap[3].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	  HAL_GPIO_WritePin(pinMap[2].port, pinMap[2].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	      HAL_GPIO_WritePin(pinMap[1].port, pinMap[1].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	      HAL_GPIO_WritePin(pinMap[0].port, pinMap[0].pin, GPIO_PIN_RESET);
-	  	  HAL_Delay(x);
-	  	      HAL_GPIO_WritePin(pinMap[0].port, pinMap[0].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[4].port, pinMap[4].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[8].port, pinMap[8].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[12].port, pinMap[12].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[13].port, pinMap[13].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[14].port, pinMap[14].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[15].port, pinMap[15].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[11].port, pinMap[11].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[7].port, pinMap[7].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[3].port, pinMap[3].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[2].port, pinMap[2].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[1].port, pinMap[1].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[5].port, pinMap[5].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[9].port, pinMap[9].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[10].port, pinMap[10].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		  HAL_GPIO_WritePin(pinMap[6].port, pinMap[6].pin, GPIO_PIN_SET);
-	  		  HAL_Delay(x);
-	  		          HAL_GPIO_WritePin(pinMap[6].port, pinMap[6].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[10].port, pinMap[10].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[9].port, pinMap[9].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[5].port, pinMap[5].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[1].port, pinMap[1].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[2].port, pinMap[2].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[3].port, pinMap[3].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[7].port, pinMap[7].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[11].port, pinMap[11].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			      HAL_GPIO_WritePin(pinMap[15].port, pinMap[15].pin, GPIO_PIN_RESET);
-	  			      HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[14].port, pinMap[14].pin, GPIO_PIN_RESET);
-	  			      HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[13].port, pinMap[13].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[12].port, pinMap[12].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			  	  HAL_GPIO_WritePin(pinMap[8].port, pinMap[8].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			      HAL_GPIO_WritePin(pinMap[4].port, pinMap[4].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-	  			      HAL_GPIO_WritePin(pinMap[0].port, pinMap[0].pin, GPIO_PIN_RESET);
-	  			  	  HAL_Delay(x);
-  }
-}
-//go through all leds one at a time
-void goThroughAllLedsOneAtATime()
-{
-  int x = 15;
-  disableAllPins();
-  for(int y = 0; y<5; y++)
-  {
-    //0-3
-    for(int count = 4; count != 0; count--)
-    {
-    	HAL_GPIO_WritePin(layers[count-1].port, layers[count-1].pin, GPIO_PIN_SET);
-      for(int i = 0; i<4; i++)
-      {
-    	  HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	  HAL_Delay(x);
-    	  HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-        HAL_Delay(x);
-      }
-      HAL_GPIO_WritePin(layers[count-1].port, layers[count-1].pin, GPIO_PIN_RESET);
-    }
-    //4-7
-    for(int count = 0; count < 4; count++)
-    {
-    	HAL_GPIO_WritePin(layers[count].port, layers[count].pin, GPIO_PIN_SET);
-      for(int i = 4; i<8; i++)
-      {
-    	  HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	  HAL_Delay(x);
-    	  HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	  HAL_Delay(x);
-      }
-      HAL_GPIO_WritePin(layers[count].port, layers[count].pin, GPIO_PIN_RESET);
-    }
-    //8-11
-    for(int count = 4; count != 0; count--)
-    {
-    	HAL_GPIO_WritePin(layers[count-1].port, layers[count-1].pin, GPIO_PIN_SET);
-      for(int i = 8; i<12; i++)
-      {
-    	  HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	      	  HAL_Delay(x);
-    	      	  HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	      	  HAL_Delay(x);
-      }
-      HAL_GPIO_WritePin(layers[count-1].port, layers[count-1].pin, GPIO_PIN_RESET);
-    }
-    //12-15
-    for(int count = 0; count < 4; count++)
-    {
-    	HAL_GPIO_WritePin(layers[count].port, layers[count].pin, GPIO_PIN_SET);
-      for(int i = 12; i<16; i++)
-      {
-    	  HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_RESET);
-    	  HAL_Delay(x);
-    	  HAL_GPIO_WritePin(pinMap[i].port, pinMap[i].pin, GPIO_PIN_SET);
-    	  HAL_Delay(x);
-      }
-      HAL_GPIO_WritePin(layers[count].port, layers[count].pin, GPIO_PIN_RESET);
-    }
-  }
 }
 
 /* USER CODE END 0 */
@@ -815,23 +217,16 @@ int main(void)
   while (1)
   {
 	  if(!strcmp(recv_str, on)){
-	  		  spiralInAndOut();
+	  		   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, SET);
 	  		}
 	  		if(!strcmp(recv_str, off)){
-	  		   propeller();
+	  		    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, RESET);
 	  	        }
-	  //	flickerOn();
-	//  turnOnAndOffAllByLayerUpAndDownNotTimed();
-	 // turnOnAndOffAllByColumnSideways();
-	 // layerstompUpAndDown();
-	 // flickerOff();
-	 // aroundEdgeDown();
-	  //diagonalRectangle();
-	 // propeller();
-	  //spiralInAndOut();
-	 // HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, SET);
-	  //goThroughAllLedsOneAtATime();
-	  //enableAllPins();
+	  		if(interruptOccurred) {
+	  			interruptOccurred = false;
+	  			processBluetoothCommands(command);
+	  		}
+	 executeCommandQueue();
 
     /* USER CODE END WHILE */
 
@@ -1034,20 +429,14 @@ static void MX_GPIO_Init(void)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
     if(huart->Instance == USART1 ){
         if(recv_char == '\r'){
-
-	        if(!strcmp(recv_str, on)){
-		   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, SET);
-		}
-		if(!strcmp(recv_str, off)){
-		    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, RESET);
-	        }
-
-		memset(recv_str, 0, i);
+        memset(command, 0, sizeof(command));
+        memcpy(command, recv_str, sizeof(recv_str));
+		memset(recv_str, 0, sizeof(recv_str));
 		i=0;
+		interruptOccurred = true;
 		}else{
-		    if(recv_char == '\r' || recv_char == '\n'){
-		} else{
-		    recv_str[i++] = recv_char;
+		    if(recv_char != '\n'){
+		    	recv_str[i++] = recv_char;
 		}
 	 }
 	 HAL_UART_Receive_IT(&huart1, &recv_char, 1); //UART1 Interrupt call
