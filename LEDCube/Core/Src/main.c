@@ -73,6 +73,8 @@ uint8_t command[40];
 int i=0;
 char *on = "on";
 char *off = "off";
+char *all_leds_on = "all_leds_on";
+char *all_leds_off = "all_leds_off";
 uint8_t ft = 76;
 volatile bool interruptOccurred = false;
 
@@ -87,6 +89,8 @@ volatile bool interruptOccurred = false;
 #define COMMAND_PROPELLER "command_propeller"
 #define COMMAND_SPIRAL "command_spiral"
 #define COMMAND_ALL_LEDS "command_all_leds"
+#define COMMAND_ALL_ON "all_leds_on"
+#define COMMAND_ALL_OFF "all_leds_off"
 
 typedef struct {
     char command[40];
@@ -219,9 +223,19 @@ int main(void)
 	  if(!strcmp(recv_str, on)){
 	  		   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, SET);
 	  		}
-	  		if(!strcmp(recv_str, off)){
+	  if(!strcmp(recv_str, off)){
 	  		    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, RESET);
-	  	        }
+	  	    }
+	  if(!strcmp(recv_str, all_leds_on)){
+	  	  		    enableAllPins();
+	  	  	    }
+	  if(!strcmp(recv_str, all_leds_off)){
+	 	  	  		    disableAllPins();
+	 	  	  	    }
+
+
+
+
 	  		if(interruptOccurred) {
 	  			interruptOccurred = false;
 	  			processBluetoothCommands(command);
